@@ -44,7 +44,6 @@ def build_grid(w: pd.DataFrame) -> pd.DataFrame:
     g["Категория"] = g.groupby("Наименование")["Категория"].ffill().bfill()
     g["количество"] = g["количество"].fillna(0)
     g["доля_акций"] = g["доля_акций"].fillna(0)
-    g["дней_с_продажами"] = g["дней_с_продажами"].fillna(0)
     # цена в неделю без продаж = последняя известная цена товара
     g = g.sort_values(["Наименование", "дата_недели"])
     for col in ("цена_продажи", "цена_закупки"):
@@ -63,10 +62,19 @@ def add_features(g: pd.DataFrame) -> pd.DataFrame:
     g["цена_лаг1"] = grp["цена_продажи"].shift(1)
     g["изменение_цены_проц"] = (g["цена_продажи"] / g["цена_лаг1"] - 1) * 100
 
-    # относительная цена: к средней по категории за неделю
-    cat_mean = (g.groupby(["Категория", "дата_недели"])["цена_продажи"]
-                .transform("mean"))
-    g["цена_к_средней_категории"] = g["цена_продажи"] / cat_mean
+    # относительная цена: к скользящему среднему цены категории
+    # за 4 ПРОШЛЫЕ недели (shift(1) — текущая неделя не участвует,
+    # чтобы исключить утечку информации проверочного периода)
+    cat_week = (g.groupby(["Категория", "дата_недели"])["цена_продажи"]
+                .mean().rename("кат_цена").reset_index()
+                .sort_values(["Категория", "дата_недели"]))
+    cat_week["кат_сред_4н"] = (cat_week.groupby("Категория")["кат_цена"]
+                               .transform(lambda x: x.shift(1)
+                                          .rolling(ROLL, min_periods=1)
+                                          .mean()))
+    g = g.merge(cat_week[["Категория", "дата_недели", "кат_сред_4н"]],
+                on=["Категория", "дата_недели"], how="left")
+    g["цена_к_средней_категории"] = g["цена_продажи"] / g["кат_сред_4н"]
 
     # сезонность
     g["неделя_sin"] = np.sin(2 * np.pi * g["неделя"] / 52)
@@ -81,7 +89,7 @@ def add_features(g: pd.DataFrame) -> pd.DataFrame:
 FEATURES = ["цена_продажи", "изменение_цены_проц", "цена_к_средней_категории",
             "акция", "маржа_проц", "продажи_лаг1", "продажи_лаг2",
             "продажи_лаг4", "продажи_скольз4", "неделя_sin", "неделя_cos",
-            "месяц", "дней_с_продажами", "Категория"]
+            "месяц", "Категория"]
 
 
 def wmape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -103,7 +111,8 @@ def main() -> None:
 
     model = lgb.LGBMRegressor(
         n_estimators=600, learning_rate=0.05, num_leaves=63,
-        subsample=0.8, colsample_bytree=0.8, random_state=42, n_jobs=-1)
+        subsample=0.8, subsample_freq=1, colsample_bytree=0.8,
+        random_state=42, n_jobs=-1)
     model.fit(train[FEATURES], y_train,
               categorical_feature=["Категория"])
 

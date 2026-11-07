@@ -103,7 +103,6 @@ def aggregate_week(day: pd.DataFrame) -> pd.DataFrame:
             "цена_продажи": np.average(x["цена_продажи"], weights=x["количество"]),
             "цена_закупки": np.average(x["цена_закупки"], weights=x["количество"]),
             "доля_акций": x["доля_акций"].mean(),
-            "дней_с_продажами": len(x),
         }), include_groups=False)
     # понедельник недели — удобная метка времени
     w["дата_недели"] = pd.to_datetime(
