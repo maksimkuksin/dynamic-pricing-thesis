@@ -13,10 +13,10 @@
 при интерпретации результатов в тексте работы.
 """
 import json
-import pickle
 import sys
 from pathlib import Path
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
@@ -28,9 +28,11 @@ MIN_PRICE_CHANGE_PCT = 2.0   # порог существенного измен�
 
 
 def main() -> None:
-    with open(ROOT / "models" / "demand_lgbm.pkl", "rb") as f:
-        bundle = pickle.load(f)
-    model, features = bundle["model"], bundle["features"]
+    model = lgb.Booster(model_str=(ROOT / "models" / "demand_lgbm.txt")
+                        .read_text(encoding="utf-8"))
+    features = json.loads(
+        (ROOT / "models" / "demand_lgbm_features.json")
+        .read_text(encoding="utf-8"))
     test = pd.read_pickle(DATA / "test_predictions.pkl")
 
     moved = test[test["изменение_цены_проц"].abs() >= MIN_PRICE_CHANGE_PCT].copy()

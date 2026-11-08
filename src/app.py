@@ -12,11 +12,12 @@
  - журнал решений: менеджер принимает или отклоняет рекомендацию
    (сохранение в SQLite, Прототип/data/журнал_решений.db).
 """
-import pickle
+import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -30,8 +31,12 @@ DB = DATA / "журнал_решений.db"
 # --- загрузка -------------------------------------------------------------
 @st.cache_resource
 def load_model():
-    with open(ROOT / "models" / "demand_lgbm.pkl", "rb") as f:
-        return pickle.load(f)
+    model = lgb.Booster(model_str=(ROOT / "models" / "demand_lgbm.txt")
+                        .read_text(encoding="utf-8"))
+    features = json.loads(
+        (ROOT / "models" / "demand_lgbm_features.json")
+        .read_text(encoding="utf-8"))
+    return {"model": model, "features": features}
 
 
 @st.cache_data
@@ -76,7 +81,6 @@ def price_curve(bundle, base: pd.DataFrame) -> pd.DataFrame:
     expanded = base.loc[np.repeat(base.index, len(grid))].reset_index(drop=True)
     cat_mean = row["цена_продажи"] / row["цена_к_средней_категории"]
     expanded["цена_продажи"] = prices
-    expanded["изменение_цены_проц"] = (prices / row["цена_лаг1"] - 1) * 100
     expanded["цена_к_средней_категории"] = prices / cat_mean
     expanded["маржа_проц"] = ((prices - row["цена_закупки"]) / prices) * 100
     q = np.expm1(model.predict(expanded[features])).clip(min=0)

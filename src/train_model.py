@@ -3,7 +3,8 @@
 Модуль формирования признаков и обучения модели прогноза спроса.
 
 Вход:  Прототип/data/weekly_sales.pkl — агрегированные продажи «товар-неделя».
-Выход: обученная модель LightGBM (pkl), метрики (json), важность признаков (csv).
+Выход: обученная модель LightGBM (нативный формат txt + список признаков
+       в json), метрики (json), важность признаков (csv).
 
 Подход:
  - строится сетка «товар × неделя» внутри периода доступности товара:
@@ -14,16 +15,25 @@
    лаги и скользящие средние продаж, категория;
  - проверка — разделение по времени: последние 8 недель — тест;
  - базовые варианты для сравнения: наивный прогноз (продажи прошлой
-   недели) и скользящее среднее за 4 недели.
+   недели), скользящее среднее за 4 недели, случайный лес и
+   лог-лог регрессия (Ridge) на том же разделении.
+
+Примечание по признакам: «изменение_цены_проц» сознательно исключён
+из обучения. Цена в недели без продаж протягивается вперёд, поэтому
+нулевое изменение цены почти всегда означает нулевые продажи — признак
+косвенно кодировал целевую переменную (см. src/diagnose_price_change.py,
+reports/диагностика_изменения_цены.json). Столбец по-прежнему считается
+и сохраняется в данных для контрфактических проверок.
 """
 import json
-import pickle
 import sys
 from pathlib import Path
 
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import Ridge
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data" / "weekly_sales.pkl"
@@ -94,7 +104,7 @@ def add_features(g: pd.DataFrame) -> pd.DataFrame:
     return g
 
 
-FEATURES = ["цена_продажи", "изменение_цены_проц", "цена_к_средней_категории",
+FEATURES = ["цена_продажи", "цена_к_средней_категории",
             "маржа_проц", "продажи_лаг1", "продажи_лаг2",
             "продажи_лаг4", "продажи_скольз4", "неделя_sin", "неделя_cos",
             "месяц", "Категория"]
@@ -130,26 +140,53 @@ def main() -> None:
     naive = test["продажи_лаг1"].to_numpy()
     roll = test["продажи_скольз4"].to_numpy()
 
+    # сравнительные модели на том же разделении: категория — one-hot,
+    # для лог-лог регрессии цена берётся в логарифме (цель уже log1p)
+    Xtr = pd.get_dummies(train[FEATURES], columns=["Категория"])
+    Xte = pd.get_dummies(test[FEATURES], columns=["Категория"])
+    Xte = Xte.reindex(columns=Xtr.columns, fill_value=0)
+
+    rf = RandomForestRegressor(n_estimators=300, min_samples_leaf=2,
+                               n_jobs=-1, random_state=42)
+    rf.fit(Xtr, y_train)
+    pred_rf = np.expm1(rf.predict(Xte)).clip(min=0)
+
+    Xtr_log = Xtr.assign(цена_продажи=np.log(Xtr["цена_продажи"]))
+    Xte_log = Xte.assign(цена_продажи=np.log(Xte["цена_продажи"]))
+    ridge = Ridge(alpha=1.0)
+    ridge.fit(Xtr_log, y_train)
+    pred_ridge = np.expm1(ridge.predict(Xte_log)).clip(min=0)
+
+    def score(y_pred: np.ndarray) -> dict:
+        return {"MAE": round(float(np.abs(y_test - y_pred).mean()), 3),
+                "WMAPE_проц": round(wmape(y_test, y_pred), 2)}
+
     metrics = {
         "период_обучения": f'{train["дата_недели"].min():%d.%m.%Y} — '
                            f'{train["дата_недели"].max():%d.%m.%Y}',
         "период_проверки": f'{test["дата_недели"].min():%d.%m.%Y} — '
                            f'{test["дата_недели"].max():%d.%m.%Y}',
         "строк_обучение": len(train), "строк_проверка": len(test),
-        "модель": {"MAE": round(float(np.abs(y_test - pred).mean()), 3),
-                   "WMAPE_проц": round(wmape(y_test, pred), 2)},
-        "наивный_прогноз": {
-            "MAE": round(float(np.abs(y_test - naive).mean()), 3),
-            "WMAPE_проц": round(wmape(y_test, naive), 2)},
-        "скользящее_среднее": {
-            "MAE": round(float(np.abs(y_test - roll).mean()), 3),
-            "WMAPE_проц": round(wmape(y_test, roll), 2)},
+        "модель": score(pred),
+        "наивный_прогноз": score(naive),
+        "скользящее_среднее": score(roll),
+        "случайный_лес": score(pred_rf),
+        "лог_лог_регрессия": score(pred_ridge),
     }
 
     MODELS.mkdir(parents=True, exist_ok=True)
     REPORTS.mkdir(parents=True, exist_ok=True)
-    with open(MODELS / "demand_lgbm.pkl", "wb") as f:
-        pickle.dump({"model": model, "features": FEATURES}, f)
+    # модель — в нативном текстовом формате LightGBM (воспроизводимо
+    # между версиями python/pickle), список признаков — рядом в json.
+    # LightGBM C API не принимает не-ASCII пути, поэтому сохраняем
+    # во временный файл и копируем средствами Python.
+    import shutil
+    import tempfile
+    tmp = Path(tempfile.gettempdir()) / "demand_lgbm.txt"
+    model.booster_.save_model(str(tmp))
+    shutil.copyfile(tmp, MODELS / "demand_lgbm.txt")
+    (MODELS / "demand_lgbm_features.json").write_text(
+        json.dumps(FEATURES, ensure_ascii=False, indent=2), encoding="utf-8")
     (REPORTS / "метрики_модели.json").write_text(
         json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
 
