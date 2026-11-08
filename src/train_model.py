@@ -27,6 +27,7 @@ reports/диагностика_изменения_цены.json). Столбец
 """
 import json
 import sys
+import time
 from pathlib import Path
 
 import lightgbm as lgb
@@ -131,8 +132,10 @@ def main() -> None:
         n_estimators=600, learning_rate=0.05, num_leaves=63,
         subsample=0.8, subsample_freq=1, colsample_bytree=0.8,
         random_state=42, n_jobs=-1)
+    t0 = time.perf_counter()
     model.fit(train[FEATURES], y_train,
               categorical_feature=["Категория"])
+    t_lgbm = time.perf_counter() - t0
 
     pred = np.expm1(model.predict(test[FEATURES])).clip(min=0)
 
@@ -148,7 +151,9 @@ def main() -> None:
 
     rf = RandomForestRegressor(n_estimators=300, min_samples_leaf=2,
                                n_jobs=-1, random_state=42)
+    t0 = time.perf_counter()
     rf.fit(Xtr, y_train)
+    t_rf = time.perf_counter() - t0
     pred_rf = np.expm1(rf.predict(Xte)).clip(min=0)
 
     Xtr_log = Xtr.assign(цена_продажи=np.log(Xtr["цена_продажи"]))
@@ -167,6 +172,8 @@ def main() -> None:
         "период_проверки": f'{test["дата_недели"].min():%d.%m.%Y} — '
                            f'{test["дата_недели"].max():%d.%m.%Y}',
         "строк_обучение": len(train), "строк_проверка": len(test),
+        "время_обучения_сек": {"LightGBM": round(t_lgbm, 2),
+                               "случайный_лес": round(t_rf, 2)},
         "модель": score(pred),
         "наивный_прогноз": score(naive),
         "скользящее_среднее": score(roll),
