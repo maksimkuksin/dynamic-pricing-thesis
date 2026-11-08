@@ -229,6 +229,11 @@ def main() -> None:
             "доля_понижений_проц": round(float((change < -0.5).mean() * 100), 1),
             "медиана_изменения_проц": round(float(np.median(change)), 2),
             "среднее_изменение_проц": round(float(change.mean()), 2),
+            # доли позиций, чей оптимум попал точно на границу сетки ±15 %
+            "доля_на_верхней_границе_сетки_проц": round(float(
+                (change >= MAX_CHANGE * 100 - 1e-6).mean() * 100), 1),
+            "доля_на_нижней_границе_сетки_проц": round(float(
+                (change <= -MAX_CHANGE * 100 + 1e-6).mean() * 100), 1),
         },
         "оценка_эластичности": {
             "медиана": round(float(np.median(elast)), 3),
