@@ -75,6 +75,10 @@ def run(seed: int, w: pd.DataFrame, test: pd.DataFrame) -> dict:
     pred = np.expm1(model.predict(test[FEATURES])).clip(min=0)
     wmape_pct = wmape(test["количество"].to_numpy(), pred)
 
+    # важность признаков плацебо-модели: показывает, что «важность»
+    # отражает использование признака, а не выученную реакцию на цену
+    importance = dict(zip(FEATURES, model.feature_importances_.tolist()))
+
     # экономический эффект оптимизации на реальном тесте (сетка ±15 %)
     fact_price = test["цена_продажи"].to_numpy()
     cost = test["цена_закупки"].to_numpy()
@@ -114,7 +118,8 @@ def run(seed: int, w: pd.DataFrame, test: pd.DataFrame) -> dict:
     return {"seed": seed,
             "WMAPE_проц": round(wmape_pct, 2),
             "эффект_оптимизации_проц": round(effect_pct, 2),
-            "совпадение_знака_реакции_проц": round(sign_pct, 1)}
+            "совпадение_знака_реакции_проц": round(sign_pct, 1),
+            "важность_признаков": importance}
 
 
 def main() -> None:

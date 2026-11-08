@@ -160,7 +160,10 @@ def main() -> None:
     Xte_log = Xte.assign(цена_продажи=np.log(Xte["цена_продажи"]))
     ridge = Ridge(alpha=1.0)
     ridge.fit(Xtr_log, y_train)
-    pred_ridge = np.expm1(ridge.predict(Xte_log)).clip(min=0)
+    # обрезка диапазоном обучающей выборки: expm1 взрывает редкие
+    # экстраполяционные прогнозы линейной модели
+    pred_ridge = np.expm1(ridge.predict(Xte_log)).clip(
+        0, float(train["количество"].max()))
 
     def score(y_pred: np.ndarray) -> dict:
         return {"MAE": round(float(np.abs(y_test - y_pred).mean()), 3),
