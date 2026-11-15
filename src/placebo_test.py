@@ -53,7 +53,8 @@ from optimize_price import MAX_CHANGE  # noqa: E402
 from sensitivity_analysis import optimize_for_grid  # noqa: E402
 from validate_price_response import MIN_PRICE_CHANGE_PCT  # noqa: E402
 from train_model import (FEATURES, LAGS, LGBM_PARAMS,  # noqa: E402
-                         add_features, build_grid, wmape)
+                         add_features, build_grid, monotone_constraints,
+                         wmape)
 
 N_RUNS = 3
 
@@ -76,16 +77,19 @@ def shuffle_prices_train(g: pd.DataFrame, cutoff, seed: int) -> pd.DataFrame:
 def run(seed: int, w: pd.DataFrame, test: pd.DataFrame) -> dict:
     cutoff = test["дата_недели"].min()
     g = add_features(shuffle_prices_train(build_grid(w), cutoff, seed))
-    g = g.dropna(subset=[f"продажи_лаг{LAGS[-1]}", "цена_лаг1"])
+    g = g.dropna(subset=[f"продажи_лаг{LAGS[-1]}", "цена_лаг1",
+                         "цена_к_средней_категории", "цена_к_своей_средней"])
     g["Категория"] = g["Категория"].astype("category")
     train = g[g["дата_недели"] < cutoff]
 
-    model = lgb.LGBMRegressor(random_state=seed, **LGBM_PARAMS)
-    model.fit(train[FEATURES], np.log1p(train["количество"]),
+    model = lgb.LGBMRegressor(random_state=seed,
+                              monotone_constraints=monotone_constraints(),
+                              **LGBM_PARAMS)
+    model.fit(train[FEATURES], train["количество"],
               categorical_feature=["Категория"])
 
     # качество прогноза на реальном проверочном периоде
-    pred = np.expm1(model.predict(test[FEATURES])).clip(min=0)
+    pred = model.predict(test[FEATURES]).clip(min=0)
     wmape_pct = wmape(test["количество"].to_numpy(), pred)
 
     # важность признаков плацебо-модели: показывает, что «важность»
@@ -101,12 +105,10 @@ def run(seed: int, w: pd.DataFrame, test: pd.DataFrame) -> dict:
     moved = test[test["изменение_цены_проц"].abs()
                  >= MIN_PRICE_CHANGE_PCT].copy()
     cf = moved.copy()
-    cf["цена_продажи"] = cf["цена_лаг1"]
     cf["цена_к_средней_категории"] = cf["цена_лаг1"] / cf["кат_сред_4н"]
-    cf["маржа_проц"] = ((cf["цена_лаг1"] - cf["цена_закупки"])
-                        / cf["цена_лаг1"] * 100)
-    q_old = np.expm1(model.predict(cf[FEATURES])).clip(min=0)
-    q_new = np.expm1(model.predict(moved[FEATURES])).clip(min=0)
+    cf["цена_к_своей_средней"] = cf["цена_лаг1"] / cf["цена_скольз_сред"]
+    q_old = model.predict(cf[FEATURES]).clip(min=0)
+    q_new = model.predict(moved[FEATURES]).clip(min=0)
     md, fd = q_new - q_old, (moved["количество"]
                              - moved["продажи_лаг1"]).to_numpy()
     base = moved["продажи_лаг1"].to_numpy() >= 1

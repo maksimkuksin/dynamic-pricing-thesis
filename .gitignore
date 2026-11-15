@@ -7,3 +7,6 @@ __pycache__/
 reports/рекомендации_цен.csv
 src/_backup_до_П1/
 _reshoot_ui.py
+reports/рекомендации_следующая_неделя.csv
+catboost_info/
+src/catboost_info/

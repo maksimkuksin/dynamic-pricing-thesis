@@ -42,11 +42,11 @@ def optimize_for_grid(model, features, test, max_change, demand_power=1.0):
     cand = (fact_price[:, None] * grid[None, :]).ravel()
     expanded = test.loc[np.repeat(test.index, k)].reset_index(drop=True)
     rows = set_price(expanded, cand)
-    q = np.expm1(model.predict(rows[features])).clip(min=0)
+    q = model.predict(rows[features]).clip(min=0)
 
     if demand_power != 1.0:
         q0 = np.repeat(
-            np.expm1(model.predict(set_price(test, fact_price)[features]))
+            model.predict(set_price(test, fact_price)[features])
             .clip(min=0), k)
         q = q0 * (q / np.maximum(q0, 1e-9)) ** demand_power
 

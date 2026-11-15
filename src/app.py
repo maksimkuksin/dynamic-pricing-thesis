@@ -82,7 +82,7 @@ def price_curve(bundle, base: pd.DataFrame) -> pd.DataFrame:
     prices = row["цена_продажи"] * grid
     expanded = base.loc[np.repeat(base.index, len(grid))].reset_index(drop=True)
     expanded = set_price(expanded, prices)
-    q = np.expm1(model.predict(expanded[features])).clip(min=0)
+    q = model.predict(expanded[features]).clip(min=0)
     profit = (prices - row["цена_закупки"]) * q
     # как в оптимизации: цены с маржой ниже порога не рассматриваются
     profit[(prices - row["цена_закупки"]) / prices < MIN_MARGIN] = np.nan

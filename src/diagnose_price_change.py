@@ -31,6 +31,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from optimize_price import set_price  # noqa: E402
 from train_model import (LAGS, TEST_WEEKS, add_features,  # noqa: E402
                          build_grid)
 
@@ -70,11 +71,9 @@ def main() -> None:
     fact_price = test["цена_продажи"].to_numpy()
     cand = (fact_price[:, None] * grid[None, :]).ravel()
     exp = test.loc[np.repeat(test.index, k)].reset_index(drop=True)
-    exp["цена_продажи"] = cand
+    exp = set_price(exp, cand)
     exp["изменение_цены_проц"] = (cand / exp["цена_лаг1"].to_numpy() - 1) * 100
-    exp["цена_к_средней_категории"] = cand / exp["кат_сред_4н"].to_numpy()
-    exp["маржа_проц"] = ((cand - exp["цена_закупки"].to_numpy()) / cand * 100)
-    q = np.expm1(model.predict(exp[features])).clip(min=0)
+    q = model.predict(exp[features]).clip(min=0)
     curve = q.reshape(n, k).mean(axis=0)
 
     # относительная кривая (к значению при фактической цене)
