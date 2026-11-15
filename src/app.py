@@ -6,11 +6,11 @@
          (рабочая папка — корень проекта)
 
 Функции:
- - сводка: число рекомендаций, ожидаемый эффект, доля изменений;
+ - сводка: число рекомендаций, ожидаемая прибыль, доли повышений и понижений;
  - таблица рекомендаций с фильтрами (категория, тип изменения, неделя);
  - карточка товара: история цены и продаж, кривая «цена -> спрос -> прибыль»;
  - журнал решений: менеджер принимает или отклоняет рекомендацию
-   (сохранение в SQLite, Прототип/data/журнал_решений.db).
+   (сохранение в SQLite, data/журнал_решений.db).
 """
 import json
 import sqlite3
@@ -21,6 +21,8 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+from optimize_price import MAX_CHANGE, MIN_MARGIN, STEP, set_price
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
@@ -76,15 +78,14 @@ def price_curve(bundle, base: pd.DataFrame) -> pd.DataFrame:
     """base — однострочный DataFrame с признаками позиции (dtype сохранены)."""
     model, features = bundle["model"], bundle["features"]
     row = base.iloc[0]
-    grid = np.arange(0.85, 1.151, 0.01)
+    grid = np.arange(1 - MAX_CHANGE, 1 + MAX_CHANGE + 1e-9, STEP)
     prices = row["цена_продажи"] * grid
     expanded = base.loc[np.repeat(base.index, len(grid))].reset_index(drop=True)
-    cat_mean = row["цена_продажи"] / row["цена_к_средней_категории"]
-    expanded["цена_продажи"] = prices
-    expanded["цена_к_средней_категории"] = prices / cat_mean
-    expanded["маржа_проц"] = ((prices - row["цена_закупки"]) / prices) * 100
+    expanded = set_price(expanded, prices)
     q = np.expm1(model.predict(expanded[features])).clip(min=0)
     profit = (prices - row["цена_закупки"]) * q
+    # как в оптимизации: цены с маржой ниже порога не рассматриваются
+    profit[(prices - row["цена_закупки"]) / prices < MIN_MARGIN] = np.nan
     return pd.DataFrame({"цена": prices.round(2), "спрос": q.round(1),
                          "прибыль": profit.round(0)})
 
@@ -92,23 +93,25 @@ def price_curve(bundle, base: pd.DataFrame) -> pd.DataFrame:
 # --- интерфейс --------------------------------------------------------------
 st.set_page_config(page_title="Динамическое ценообразование", layout="wide")
 st.title("Интеллектуальная система динамического ценообразования")
-st.caption("Прототип: прогноз спроса (LightGBM) + оптимизация цены "
-           "по ожидаемой маржинальной прибыли. Проверочный период — "
-           "последние 8 недель данных.")
-
 bundle = load_model()
 rec, test, weekly = load_data()
 init_db()
+
+st.caption("Прототип: прогноз спроса (LightGBM) + оптимизация цены "
+           "по ожидаемой маржинальной прибыли. Проверочный период — "
+           f"последние {rec['дата_недели'].nunique()} недель данных.")
 
 total_profit = rec["прибыль_ожид"].sum()
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Позиций с рекомендациями", f"{len(rec):,}".replace(",", " "))
 c2.metric("Ожидаемая прибыль за период", f"{total_profit / 1e6:,.1f} млн ₽"
-          .replace(",", " "))
+          .replace(",", " ").replace(".", ","))
 c3.metric("Рекомендовано повышений",
           f"{(rec['изменение_проц'] > 0.5).mean() * 100:.0f}%")
 c4.metric("Рекомендовано понижений",
           f"{(rec['изменение_проц'] < -0.5).mean() * 100:.0f}%")
+
+st.caption("Ожидаемая прибыль — модельная оценка, а не результат A/B-теста.")
 
 tab_rec, tab_card, tab_log = st.tabs(
     ["Рекомендации", "Карточка товара", "Журнал решений"])
@@ -167,12 +170,15 @@ with tab_card:
     c.metric("Ожидаемая прибыль",
              f"{row_rec['прибыль_ожид']:,.0f} ₽".replace(",", " "))
 
-    hist = weekly[weekly["Наименование"] == name]
+    hist = weekly[weekly["Наименование"] == name].set_index("дата_недели")
+    hist = hist.reindex(pd.date_range(hist.index.min(),
+                                      weekly["дата_недели"].max(),
+                                      freq="W-MON"))
+    hist["количество"] = hist["количество"].fillna(0)
+    hist["цена_продажи"] = hist["цена_продажи"].ffill()
     st.subheader("История: цена и продажи по неделям")
-    st.line_chart(hist.set_index("дата_недели")[["цена_продажи"]],
-                  y_label="Цена, ₽")
-    st.line_chart(hist.set_index("дата_недели")[["количество"]],
-                  y_label="Продажи, шт.")
+    st.line_chart(hist[["цена_продажи"]], y_label="Цена, ₽")
+    st.line_chart(hist[["количество"]], y_label="Продажи, шт.")
 
     st.subheader("Кривая «цена → спрос → прибыль» (по модели)")
     curve = price_curve(bundle, row_feat)
@@ -193,4 +199,4 @@ with tab_log:
     log = load_log()
     st.dataframe(log, width="stretch")
     st.caption(f"Всего решений: {len(log)}. Хранение: SQLite, "
-               "Прототип/data/журнал_решений.db")
+               "data/журнал_решений.db")

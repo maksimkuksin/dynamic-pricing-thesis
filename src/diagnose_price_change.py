@@ -14,6 +14,11 @@
     недели) видна ступенька, артефакт подтверждён.
 
 Выход: reports/диагностика_изменения_цены.json
+
+Примечание: проверка 2 показывает ступеньку только для модели, в признаках
+которой есть «изменение_цены_проц». Текущая модель его не использует
+(см. train_model.py), поэтому там ступеньки быть не должно; проверка 1
+от модели не зависит и воспроизводится всегда.
 """
 import json
 import sys
@@ -24,6 +29,10 @@ import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from train_model import (LAGS, TEST_WEEKS, add_features,  # noqa: E402
+                         build_grid)
 
 
 def main() -> None:
@@ -36,10 +45,9 @@ def main() -> None:
     weekly = pd.read_pickle(ROOT / "data" / "weekly_sales.pkl")
 
     # --- проверка 1: нулевые продажи против нулевого изменения цены -------
-    from train_model import build_grid, add_features
     g = add_features(build_grid(weekly))
-    g = g.dropna(subset=["продажи_лаг4", "цена_лаг1"])
-    cutoff = g["дата_недели"].max() - pd.Timedelta(weeks=8)
+    g = g.dropna(subset=[f"продажи_лаг{LAGS[-1]}", "цена_лаг1"])
+    cutoff = g["дата_недели"].max() - pd.Timedelta(weeks=TEST_WEEKS)
     train = g[g["дата_недели"] <= cutoff]
 
     zero_change = train["изменение_цены_проц"].abs() < 1e-9
@@ -84,6 +92,7 @@ def main() -> None:
     i_max_step = int(np.argmax(np.abs(diffs)))
 
     result = {
+        "модель_использует_признак": "изменение_цены_проц" in features,
         "проверка_1_табличная": tab,
         "проверка_2_кривая": {
             "сетка_множителей": [round(float(x), 2) for x in grid],

@@ -2,9 +2,11 @@
 """
 Модуль формирования признаков и обучения модели прогноза спроса.
 
-Вход:  Прототип/data/weekly_sales.pkl — агрегированные продажи «товар-неделя».
+Вход:  data/weekly_sales.pkl — агрегированные продажи «товар-неделя».
 Выход: обученная модель LightGBM (нативный формат txt + список признаков
-       в json), метрики (json), важность признаков (csv).
+       в json), метрики (json), важность признаков (csv), прогнозы
+       проверочного периода (data/test_predictions.pkl — вход для
+       остальных модулей).
 
 Подход:
  - строится сетка «товар × неделя» внутри периода доступности товара:
@@ -26,7 +28,9 @@ reports/диагностика_изменения_цены.json). Столбец
 и сохраняется в данных для диагностических проверок.
 """
 import json
+import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -36,14 +40,20 @@ import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Ridge
 
+from prepare_data import TEST_WEEKS  # единый источник: фильтр товаров там
+
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data" / "weekly_sales.pkl"
 MODELS = ROOT / "models"
 REPORTS = ROOT / "reports"
 
-TEST_WEEKS = 8          # последние 8 недель — проверочный период
+# последние TEST_WEEKS недель — проверочный период (константа из prepare_data)
 LAGS = (1, 2, 4)        # лаги продаж
 ROLL = 4                # окно скользящих средних
+# random_state задаётся при создании модели (в плацебо-тесте — seed прогона)
+LGBM_PARAMS = dict(n_estimators=600, learning_rate=0.05, num_leaves=63,
+                   subsample=0.8, subsample_freq=1, colsample_bytree=0.8,
+                   n_jobs=-1)
 
 
 def build_grid(w: pd.DataFrame) -> pd.DataFrame:
@@ -52,6 +62,9 @@ def build_grid(w: pd.DataFrame) -> pd.DataFrame:
     Сетка строится только внутри периода реальной доступности товара:
     недели до первой продажи не включаются, чтобы не порождать
     искусственные нулевые продажи для ещё не заведённого ассортимента.
+    Дата первой продажи определяется по всей выборке, включая проверочный
+    период; на обучение это не влияет: товар, впервые проданный в тесте,
+    в обучающую выборку не попадает в любом случае.
     """
     weeks = w[["дата_недели", "год", "неделя"]].drop_duplicates()
     first = (w.groupby("Наименование")["дата_недели"].min()
@@ -128,10 +141,7 @@ def main() -> None:
     y_train = np.log1p(train["количество"])
     y_test = test["количество"].to_numpy()
 
-    model = lgb.LGBMRegressor(
-        n_estimators=600, learning_rate=0.05, num_leaves=63,
-        subsample=0.8, subsample_freq=1, colsample_bytree=0.8,
-        random_state=42, n_jobs=-1)
+    model = lgb.LGBMRegressor(random_state=42, **LGBM_PARAMS)
     t0 = time.perf_counter()
     model.fit(train[FEATURES], y_train,
               categorical_feature=["Категория"])
@@ -190,8 +200,6 @@ def main() -> None:
     # между версиями python/pickle), список признаков — рядом в json.
     # LightGBM C API не принимает не-ASCII пути, поэтому сохраняем
     # во временный файл и копируем средствами Python.
-    import shutil
-    import tempfile
     tmp = Path(tempfile.gettempdir()) / "demand_lgbm.txt"
     model.booster_.save_model(str(tmp))
     shutil.copyfile(tmp, MODELS / "demand_lgbm.txt")

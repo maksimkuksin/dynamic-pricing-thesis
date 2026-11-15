@@ -19,7 +19,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORTS = ROOT / "reports"
@@ -32,8 +31,8 @@ N_BOOTSTRAP = 1000
 SEED = 42
 
 
-def optimize_for_grid(model, features, test, max_change, demand_scale=1.0):
-    """Эффект рекомендаций для сетки ±max_change; demand_scale=2 — квадрат
+def optimize_for_grid(model, features, test, max_change, demand_power=1.0):
+    """Эффект рекомендаций для сетки ±max_change; demand_power=2 — квадрат
     отклонения спроса (удвоенная эластичность)."""
     grid = np.arange(1 - max_change, 1 + max_change + 1e-9, STEP)
     fact_price = test["цена_продажи"].to_numpy()
@@ -45,11 +44,11 @@ def optimize_for_grid(model, features, test, max_change, demand_scale=1.0):
     rows = set_price(expanded, cand)
     q = np.expm1(model.predict(rows[features])).clip(min=0)
 
-    if demand_scale != 1.0:
+    if demand_power != 1.0:
         q0 = np.repeat(
             np.expm1(model.predict(set_price(test, fact_price)[features]))
             .clip(min=0), k)
-        q = q0 * (q / np.maximum(q0, 1e-9)) ** demand_scale
+        q = q0 * (q / np.maximum(q0, 1e-9)) ** demand_power
 
     profit = (cand - np.repeat(cost, k)) * q
     margin = (cand - np.repeat(cost, k)) / cand
@@ -84,7 +83,7 @@ def main() -> None:
 
     # --- 2. удвоенная эластичность ----------------------------------------
     fp2, rp2 = optimize_for_grid(model, features, test, 0.15,
-                                 demand_scale=2.0)
+                                 demand_power=2.0)
     out["эластичность_x2"] = {
         "эффект_проц": round(float(rp2.sum() / fp2.sum() - 1) * 100, 2),
         "описание": "отклонение прогноза спроса от базового возведено "

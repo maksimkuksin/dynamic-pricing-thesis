@@ -40,7 +40,6 @@ def main() -> None:
     # прогноз при ПРЕЖНЕЙ цене (цена_лаг1)
     cf = moved.copy()
     cf["цена_продажи"] = cf["цена_лаг1"]
-    cf["изменение_цены_проц"] = 0.0
     cf["цена_к_средней_категории"] = cf["цена_лаг1"] / cf["кат_сред_4н"]
     cf["маржа_проц"] = ((cf["цена_лаг1"] - cf["цена_закупки"])
                         / cf["цена_лаг1"] * 100)
@@ -55,12 +54,12 @@ def main() -> None:
     base = moved["продажи_лаг1"].to_numpy() >= 1
     moved_b = moved[base]
     md, fd = model_delta[base], fact_delta[base]
-    q_old_b = q_old[base]
 
     # знаковое согласие (для существенной реакции модели)
     sig = np.abs(md) > 0.5
     n_valid_sign = int(sig.sum())
-    sign_agree = float((np.sign(md[sig]) == np.sign(fd[sig])).mean() * 100)
+    sign_agree = (float((np.sign(md[sig]) == np.sign(fd[sig])).mean() * 100)
+                  if sig.any() else None)
 
     # отдельно по направлению изменения цены
     up = moved_b["изменение_цены_проц"].to_numpy() > 0
@@ -81,7 +80,8 @@ def main() -> None:
         "доля_от_проверочного_набора_проц": round(len(moved) / len(test) * 100, 1),
         "позиций_с_ненулевой_базой": int(base.sum()),
         "позиций_в_расчёте_совпадения_знака": n_valid_sign,
-        "совпадение_знака_реакции_проц": round(sign_agree, 1),
+        "совпадение_знака_реакции_проц":
+            None if sign_agree is None else round(sign_agree, 1),
         "совпадение_знака_при_повышении_цены_проц": agree(up),
         "совпадение_знака_при_понижении_цены_проц": agree(~up),
         "ранговая_корреляция_Spearman": round(spearman, 3),

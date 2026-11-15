@@ -28,11 +28,12 @@
    прогона и диапазон.
 
 Интерпретация для текста ВКР: если плацебо-модель показывает эффект
-того же порядка, что и реальная, то величина «+39,3 %» характеризует
-результат оптимизации в пределах заданной ценовой сетки при слабом
-модельном отклике, а не доказанный экономический эффект; выводы об
-эффекте следует опирать на сценарный анализ с условными допущениями
-о доле реализации модельного эффекта (10 / 25 / 50 %).
+того же порядка, что и реальная, то величина эффекта основной модели
+характеризует результат оптимизации в пределах заданной ценовой сетки
+при слабом модельном отклике, а не доказанный экономический эффект;
+выводы об эффекте следует опирать на сценарный анализ с условными
+допущениями о доле реализации модельного эффекта (10 / 25 / 50 %;
+выполнен в тексте ВКР, раздел 3.3, в коде не реализован).
 
 Выход: reports/плацебо_тест.json
 """
@@ -48,13 +49,13 @@ ROOT = Path(__file__).resolve().parents[1]
 REPORTS = ROOT / "reports"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from optimize_price import MIN_MARGIN, STEP, expected_profit, set_price  # noqa: E402
-from train_model import (FEATURES, LAGS, add_features, build_grid,  # noqa: E402
-                         wmape)
+from optimize_price import MAX_CHANGE  # noqa: E402
+from sensitivity_analysis import optimize_for_grid  # noqa: E402
+from validate_price_response import MIN_PRICE_CHANGE_PCT  # noqa: E402
+from train_model import (FEATURES, LAGS, LGBM_PARAMS,  # noqa: E402
+                         add_features, build_grid, wmape)
 
 N_RUNS = 3
-MAX_CHANGE = 0.15   # основная сетка оптимизации
-MIN_PRICE_CHANGE_PCT = 2.0  # как в validate_price_response.py
 
 
 def shuffle_prices_train(g: pd.DataFrame, cutoff, seed: int) -> pd.DataFrame:
@@ -79,10 +80,7 @@ def run(seed: int, w: pd.DataFrame, test: pd.DataFrame) -> dict:
     g["Категория"] = g["Категория"].astype("category")
     train = g[g["дата_недели"] < cutoff]
 
-    model = lgb.LGBMRegressor(
-        n_estimators=600, learning_rate=0.05, num_leaves=63,
-        subsample=0.8, subsample_freq=1, colsample_bytree=0.8,
-        random_state=seed, n_jobs=-1)
+    model = lgb.LGBMRegressor(random_state=seed, **LGBM_PARAMS)
     model.fit(train[FEATURES], np.log1p(train["количество"]),
               categorical_feature=["Категория"])
 
@@ -95,22 +93,8 @@ def run(seed: int, w: pd.DataFrame, test: pd.DataFrame) -> dict:
     importance = dict(zip(FEATURES, model.feature_importances_.tolist()))
 
     # экономический эффект оптимизации на реальном тесте (сетка ±15 %)
-    fact_price = test["цена_продажи"].to_numpy()
-    cost = test["цена_закупки"].to_numpy()
-    grid = np.arange(1 - MAX_CHANGE, 1 + MAX_CHANGE + 1e-9, STEP)
-    n, k = len(test), len(grid)
-    cand = (fact_price[:, None] * grid[None, :]).ravel()
-    expanded = test.loc[np.repeat(test.index, k)].reset_index(drop=True)
-    q = np.expm1(model.predict(set_price(expanded, cand)[FEATURES])) \
-        .clip(min=0)
-    profit = (cand - np.repeat(cost, k)) * q
-    profit[(cand - np.repeat(cost, k)) / cand < MIN_MARGIN] = -np.inf
-    profit2d = profit.reshape(n, k)
-    all_bad = ~np.isfinite(profit2d).any(axis=1)
-    best = profit2d.argmax(axis=1)
-    rec_profit = profit2d[np.arange(n), best]
-    fact_profit, _ = expected_profit(model, FEATURES, test, fact_price)
-    rec_profit[all_bad] = fact_profit[all_bad]
+    fact_profit, rec_profit = optimize_for_grid(
+        model, FEATURES, test, MAX_CHANGE)
     effect_pct = float(rec_profit.sum() / fact_profit.sum() - 1) * 100
 
     # совпадение знака реакции (та же схема, что в validate_price_response)
@@ -128,12 +112,14 @@ def run(seed: int, w: pd.DataFrame, test: pd.DataFrame) -> dict:
     base = moved["продажи_лаг1"].to_numpy() >= 1
     md, fd = md[base], fd[base]
     sig = np.abs(md) > 0.5
-    sign_pct = float((np.sign(md[sig]) == np.sign(fd[sig])).mean() * 100)
+    sign_pct = (float((np.sign(md[sig]) == np.sign(fd[sig])).mean() * 100)
+                if sig.any() else None)
 
     return {"seed": seed,
             "WMAPE_проц": round(wmape_pct, 2),
             "эффект_оптимизации_проц": round(effect_pct, 2),
-            "совпадение_знака_реакции_проц": round(sign_pct, 1),
+            "совпадение_знака_реакции_проц":
+                None if sign_pct is None else round(sign_pct, 1),
             "важность_признаков": importance}
 
 
@@ -144,9 +130,9 @@ def main() -> None:
 
     runs = [run(seed, w, test) for seed in range(N_RUNS)]
 
-    def rng(key):
-        vals = [r[key] for r in runs]
-        return [min(vals), max(vals)]
+    def span(key):
+        vals = [r[key] for r in runs if r[key] is not None]
+        return [min(vals), max(vals)] if vals else None
 
     out = {
         "описание": "плацебо-модели обучены на ценах, перемешанных по "
@@ -159,10 +145,10 @@ def main() -> None:
         "прогонов": N_RUNS,
         "прогоны": runs,
         "диапазоны": {
-            "WMAPE_проц": rng("WMAPE_проц"),
-            "эффект_оптимизации_проц": rng("эффект_оптимизации_проц"),
+            "WMAPE_проц": span("WMAPE_проц"),
+            "эффект_оптимизации_проц": span("эффект_оптимизации_проц"),
             "совпадение_знака_реакции_проц":
-                rng("совпадение_знака_реакции_проц"),
+                span("совпадение_знака_реакции_проц"),
         },
         "для_сравнения_реальная_модель": {
             "WMAPE_проц": json.loads((REPORTS / "метрики_модели.json")
@@ -178,6 +164,9 @@ def main() -> None:
                 "совпадение_знака_реакции_проц"],
         },
     }
+    real = out["для_сравнения_реальная_модель"]["эффект_оптимизации_проц"]
+    out["реальный_эффект_не_выше_максимума_плацебо"] = (
+        real <= out["диапазоны"]["эффект_оптимизации_проц"][1])
     (REPORTS / "плацебо_тест.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(out, ensure_ascii=False, indent=2))
