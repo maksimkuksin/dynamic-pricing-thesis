@@ -23,9 +23,14 @@ import pandas as pd
 
 # --- Пути ---------------------------------------------------------------
 ROOT = Path(__file__).resolve().parents[1]          # папка Прототип
-RAW_XLSX = ROOT.parent / "Датасет.xlsx"             # исходник лежит в корне проекта
+RAW_XLSX = ROOT.parent / "ВКР_финал" / "Новый датасет.xlsb"  # исходник (только B2C)
 DATA_DIR = ROOT / "data"
 REPORTS_DIR = ROOT / "reports"
+
+# соответствие колонок исходной выгрузки именам, используемым в конвейере
+COLUMN_ALIAS = {"Наименование товара": "Наименование",
+                "Дата продажи": "Дата",
+                "Категория товара": "Категория"}
 
 MIN_WEEKS_WITH_SALES = 20   # товар должен иметь продажи минимум в 20 неделях
 MAX_QTY_PER_ROW = 100       # отсечение оптовых выбросов (медиана = 2 шт.)
@@ -36,11 +41,12 @@ TEST_WEEKS = 8              # последние 8 недель — провер
 
 
 def load_raw() -> pd.DataFrame:
-    """Загружает исходный xlsx с кэшированием в pickle."""
+    """Загружает исходный файл выгрузки (xlsb) с кэшированием в pickle."""
     cache = DATA_DIR / "raw_cache.pkl"
     if cache.exists():
         return pd.read_pickle(cache)
-    df = pd.read_excel(RAW_XLSX)
+    df = pd.read_excel(RAW_XLSX, engine="pyxlsb")
+    df = df.rename(columns=COLUMN_ALIAS)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     df.to_pickle(cache)
     return df
@@ -145,7 +151,7 @@ def build_report_md(report: dict) -> str:
     return "\n".join([
         "# Отчёт о подготовке данных (модуль prepare_data.py)",
         "",
-        f"Вход: Датасет.xlsx ({c['строк_исходно']:,} строк). "
+        f"Вход: Новый датасет.xlsb ({c['строк_исходно']:,} строк). "
         "Выход: Прототип/data/weekly_sales.pkl. "
         "Отчёт сгенерирован автоматически из reports/подготовка_данных.json."
         .replace(",", " "),
